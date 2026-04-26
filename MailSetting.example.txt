@@ -1,0 +1,30 @@
+# 阿Vi每日趨勢報 — 設定範本
+# 複製此檔為 MailSetting.txt，並填入真實資訊
+# 等號後不要有多餘空格；多個收件人以分號(;)隔開
+
+# ── AI 翻譯設定 ──────────────────────────────
+# 選擇 AI 提供商: gemini 或 anthropic
+AIProvider=gemini
+
+# Gemini API Key (至 https://aistudio.google.com/app/apikey 取得)
+GeminiAPIKey=YOUR_GEMINI_API_KEY
+
+# Anthropic API Key (AIProvider=anthropic 時填寫)
+AnthropicAPIKey=YOUR_ANTHROPIC_API_KEY
+
+# AI 模型 (選填，留空使用預設)
+# Gemini 預設: gemini-2.0-flash
+# Anthropic 預設: claude-haiku-4-5-20251001
+AIModel=
+
+# ── 郵件設定 ─────────────────────────────────
+Sender=your.gmail@gmail.com
+Receiver=recipient1@gmail.com;recipient2@example.com
+# Gmail 應用程式密碼（16碼，非登入密碼）
+# 取得方式：Google 帳號 > 安全性 > 兩步驟驗證 > 應用程式密碼
+AppPassword=xxxx xxxx xxxx xxxx
+
+# ── 瀏覽器模式 ───────────────────────────────
+# headless = 背景執行（排程用）
+# headed   = 顯示瀏覽器視窗（測試/除錯用）
+BrowserMode=headless
