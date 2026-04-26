@@ -159,23 +159,30 @@ async def _extract_keywords(page: Page) -> list[str]:
     Strategy 3: broad JS search.
     """
 
-    # ── Strategy 1: q= from explore button links ─────────────────────────────
+    # ── Strategy 1: first explore link per feed-item ─────────────────────────
+    # Each feed-item has multiple /trends/explore links:
+    #   [0] = main keyword,  [1+] = related "趨勢詳細資料" topics (wrong ones)
+    # We must take only the FIRST link per feed-item.
     keywords: list[str] = await page.evaluate("""() => {
         const results = [];
         const seen = new Set();
-        const links = document.querySelectorAll(
-            'a[href*="/trends/explore"], a[href*="/trending/explore"]'
-        );
-        for (const a of links) {
-            try {
-                const url = new URL(a.href);
-                const q = url.searchParams.get('q');
-                if (!q || q.length < 2 || q.length > 200) continue;
-                if (seen.has(q)) continue;
-                seen.add(q);
-                results.push(q);
-                if (results.length >= 25) break;
-            } catch (e) {}
+        const feedItems = document.querySelectorAll('feed-item');
+        for (const item of feedItems) {
+            const links = item.querySelectorAll(
+                'a[href*="/trends/explore"], a[href*="/trending/explore"]'
+            );
+            for (const a of links) {
+                try {
+                    const url = new URL(a.href);
+                    const q = url.searchParams.get('q');
+                    if (!q || q.length < 2 || q.length > 200) continue;
+                    if (seen.has(q)) continue;
+                    seen.add(q);
+                    results.push(q);
+                } catch (e) {}
+                break;  // only first explore link per feed-item
+            }
+            if (results.length >= 25) break;
         }
         return results;
     }""")
