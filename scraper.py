@@ -76,6 +76,35 @@ async def _wait_for_content(page: Page) -> None:
     await page.wait_for_timeout(6000)
 
 
+async def _scroll_to_load_keywords(page: Page, target: int = 25) -> None:
+    """Wheel-scroll down until `target` unique keywords appear in DOM."""
+    for _ in range(20):
+        count = await page.evaluate("""() => {
+            const qs = new Set();
+            for (const a of document.querySelectorAll(
+                    'a[href*="/trends/explore"], a[href*="/trending/explore"]')) {
+                try {
+                    const q = new URL(a.href).searchParams.get('q');
+                    if (q && q.length >= 2) qs.add(q);
+                } catch (e) {}
+            }
+            return qs.size;
+        }""")
+        if count >= target:
+            break
+        await page.mouse.wheel(0, 700)
+        await page.wait_for_timeout(1000)
+
+
+async def _ensure_feed_item(page: Page, idx: int) -> None:
+    """Scroll until feed-item at `idx` is present in DOM."""
+    for _ in range(10):
+        if await page.locator("feed-item").count() > idx:
+            break
+        await page.mouse.wheel(0, 600)
+        await page.wait_for_timeout(800)
+
+
 async def _dismiss_consent(page: Page) -> None:
     for selector in [
         "button:has-text('接受所有')",
@@ -417,6 +446,9 @@ async def scrape_country(page: Page, country_code: str, debug: bool = False) -> 
         await page.screenshot(path=f"debug_{country_code}_list.png")
         await _save_debug_html(page, country_code)
 
+    print(f"[{country_code}] 捲動載入所有關鍵字...")
+    await _scroll_to_load_keywords(page, target=25)
+
     keywords = await _extract_keywords(page)
 
     if not keywords:
@@ -431,6 +463,7 @@ async def scrape_country(page: Page, country_code: str, debug: bool = False) -> 
 
     for idx, keyword in enumerate(keywords[:25]):
         print(f"  [{idx+1:02d}/{min(len(keywords), 25)}] {keyword[:40]}")
+        await _ensure_feed_item(page, idx)
         item = await _scrape_one_keyword(page, keyword, idx, list_url, debug)
         results.append(item)
         print(f"       → {len(item.get('news', []))} 則新聞")
