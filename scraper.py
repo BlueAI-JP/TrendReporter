@@ -1,10 +1,10 @@
 """Playwright-based Google Trends scraper for TrendReporter.
 
 Flow per country:
-  1. Navigate to trending page
+  1. Navigate to trending page, wait for Angular rendering
   2. Extract up to 25 keywords
   3. For each keyword:
-     a. Click → wait for sidebar/panel
+     a. Click → wait for sidebar/panel to appear
      b. Extract top-3 news links from sidebar
      c. If no news → click search button → Google Search News tab → extract top-3
   4. Return raw data list (no translation yet)
@@ -66,10 +66,16 @@ _NEWS_TAB_SELECTORS = [
 ]
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Page loading helpers ──────────────────────────────────────────────────────
 
-def _is_google_url(url: str) -> bool:
-    return any(h in url for h in _GOOGLE_HOSTS)
+async def _wait_for_content(page: Page) -> None:
+    """Wait for Angular/JS-rendered content to fully appear."""
+    try:
+        await page.wait_for_load_state("networkidle", timeout=15000)
+    except Exception:
+        pass
+    # Angular needs extra time after network is idle
+    await page.wait_for_timeout(6000)
 
 
 async def _dismiss_consent(page: Page) -> None:
@@ -87,14 +93,40 @@ async def _dismiss_consent(page: Page) -> None:
             btn = page.locator(selector).first
             if await btn.count() > 0:
                 await btn.click(timeout=3000)
-                await page.wait_for_timeout(1000)
+                await page.wait_for_timeout(2000)
                 return
         except Exception:
             pass
 
 
+async def _save_debug_html(page: Page, label: str) -> None:
+    """Save page HTML and a summary of found elements for debugging."""
+    content = await page.content()
+    html_path = Path(f"debug_{label}_page.html")
+    html_path.write_text(content, encoding="utf-8")
+
+    # Also print a structural summary so the user sees it in terminal
+    summary = await page.evaluate("""() => {
+        const candidates = [
+            'feed-item', 'feed-list', 'trending-searches-list',
+            '[class*="trending"]', '[class*="feed"]', '[class*="explore"]',
+            'a[href*="/trending"]', 'a[href*="/trends"]',
+        ];
+        const counts = {};
+        for (const sel of candidates) {
+            counts[sel] = document.querySelectorAll(sel).length;
+        }
+        return counts;
+    }""")
+    non_zero = {k: v for k, v in summary.items() if v > 0}
+    print(f"  [debug] 頁面元素: {non_zero}")
+    print(f"  [debug] HTML 已儲存: {html_path}")
+
+
+# ── News extraction helpers ───────────────────────────────────────────────────
+
 async def _get_external_news_from_page(page: Page, limit: int = 3) -> list[dict]:
-    """Extract external news links visible on the current page (used for sidebar + search)."""
+    """Extract external news links from sidebar or page body."""
     return await page.evaluate(
         """(args) => {
         const { panelSelectors, googleHosts, limit } = args;
@@ -108,6 +140,8 @@ async def _get_external_news_from_page(page: Page, limit: int = 3) -> list[dict]
 
         const results = [];
         const seen = new Set();
+        const skipWords = ['搜尋', 'Search', '検索', '검색', 'MORE', '更多', 'View more',
+                           'Google 搜尋', 'Google Search'];
 
         const anchors = root.querySelectorAll('a[href^="http"]');
         for (const a of anchors) {
@@ -118,9 +152,6 @@ async def _get_external_news_from_page(page: Page, limit: int = 3) -> list[dict]
             if (googleHosts.some(h => href.includes(h))) continue;
             if (text.length < 6 || text.length > 350) continue;
             if (seen.has(href)) continue;
-
-            // Skip navigation/button-like text
-            const skipWords = ['搜尋', 'Search', '検索', '검색', 'MORE', '更多', 'View more'];
             if (skipWords.includes(text)) continue;
 
             seen.add(href);
@@ -136,20 +167,21 @@ async def _get_external_news_from_page(page: Page, limit: int = 3) -> list[dict]
 async def _try_search_fallback(page: Page, keyword: str, original_url: str) -> list[dict]:
     """Click the Search button → go to Google News tab → extract news."""
 
-    # Try clicking the search button inside the panel
     clicked = False
     for selector in _SEARCH_BTN_SELECTORS:
         try:
             btn = page.locator(selector).first
             if await btn.count() > 0:
                 await btn.click(timeout=4000)
-                await page.wait_for_load_state("domcontentloaded", timeout=15000)
+                try:
+                    await page.wait_for_load_state("domcontentloaded", timeout=15000)
+                except Exception:
+                    pass
                 clicked = True
                 break
         except Exception:
             pass
 
-    # If no search button found, navigate directly to Google News search
     if not clicked:
         encoded = keyword.replace(" ", "+")
         await page.goto(
@@ -158,37 +190,32 @@ async def _try_search_fallback(page: Page, keyword: str, original_url: str) -> l
             timeout=20000,
         )
 
-    await page.wait_for_timeout(1500)
+    await page.wait_for_timeout(2000)
 
-    # If landed on general search (not news), click the News tab
     if "tbm=nws" not in page.url:
         for selector in _NEWS_TAB_SELECTORS:
             try:
                 tab = page.locator(selector).first
                 if await tab.count() > 0:
                     await tab.click(timeout=4000)
-                    await page.wait_for_load_state("domcontentloaded", timeout=10000)
+                    try:
+                        await page.wait_for_load_state("domcontentloaded", timeout=10000)
+                    except Exception:
+                        pass
                     break
             except Exception:
                 pass
 
-    await page.wait_for_timeout(1000)
+    await page.wait_for_timeout(1500)
 
-    # Extract Google News results
     news = await page.evaluate(
         """(googleHosts) => {
         const results = [];
         const seen = new Set();
-
-        // Google News result selectors (multiple layouts)
         const selectors = [
-            'div[data-news-doc-id] a',
-            '.SoaBEf a',
-            '.WlydOe',
-            'g-card a[href^="http"]',
-            'article a[href^="http"]',
-            '.dbsr a',
-            'a.WlydOe',
+            'div[data-news-doc-id] a', '.SoaBEf a', '.WlydOe',
+            'g-card a[href^="http"]', 'article a[href^="http"]',
+            '.dbsr a', 'a.WlydOe',
         ];
 
         for (const sel of selectors) {
@@ -216,129 +243,205 @@ async def _try_search_fallback(page: Page, keyword: str, original_url: str) -> l
 
 # ── Keyword extraction ────────────────────────────────────────────────────────
 
-async def _get_keywords(page: Page) -> list[str]:
-    """Extract up to 25 trending keyword texts from the list page."""
+async def _get_keyword_elements(page: Page) -> list[tuple[str, object]]:
+    """Return up to 25 (keyword_text, locator) pairs.
 
-    # CSS selector attempts
+    Tries multiple strategies in order:
+      1. Links to /trending/explore pages (most reliable)
+      2. feed-item components
+      3. JavaScript broad extraction
+    """
+
+    # Strategy 1: anchor tags pointing to trending detail pages
     for selector in [
+        "a[href*='/trending/explore']",
+        "a[href*='/trends/explore']",
+        "a[href*='trending/explore']",
+        "a[href*='trends/explore']",
+    ]:
+        elements = await page.locator(selector).all()
+        if len(elements) >= 3:
+            pairs = []
+            for el in elements[:25]:
+                try:
+                    text = (await el.inner_text()).strip()
+                    if text and 2 < len(text) < 200:
+                        pairs.append((text, el))
+                except Exception:
+                    pass
+            if len(pairs) >= 3:
+                return pairs
+
+    # Strategy 2: feed-item .title sub-elements (various selector variants)
+    for title_sel in [
         "feed-item .title a",
         "feed-item .details .title",
         "feed-item .title",
-        ".trending-searches-item .title",
-        "[class*='trending'] [class*='title']",
+        "feed-item [class*='title']",
+        "feed-item a:first-child",
     ]:
-        try:
-            elements = await page.locator(selector).all()
-            if len(elements) >= 3:
-                keywords = []
-                for el in elements[:25]:
-                    try:
-                        text = (await el.inner_text()).strip()
-                        if text and 1 < len(text) < 200:
-                            keywords.append(text)
-                    except Exception:
-                        pass
-                if keywords:
-                    return keywords
-        except Exception:
-            pass
+        elements = await page.locator(title_sel).all()
+        if len(elements) >= 3:
+            pairs = []
+            for el in elements[:25]:
+                try:
+                    text = (await el.inner_text()).strip().split("\n")[0].strip()
+                    if text and 2 < len(text) < 200:
+                        pairs.append((text, el))
+                except Exception:
+                    pass
+            if len(pairs) >= 3:
+                return pairs
 
-    # JavaScript fallback — tries multiple strategies
-    return await page.evaluate("""() => {
-        const strategies = [
-            () => document.querySelectorAll('feed-item .title'),
-            () => document.querySelectorAll('feed-item [class*="title"]'),
-            () => document.querySelectorAll('.trending-item .title'),
-            () => document.querySelectorAll('[class*="trending-search"] .title'),
-        ];
+    # Strategy 3: whole feed-item clicks
+    elements = await page.locator("feed-item").all()
+    if len(elements) >= 3:
+        pairs = []
+        for el in elements[:25]:
+            try:
+                raw = await el.inner_text()
+                text = raw.strip().split("\n")[0].strip()
+                if text and 2 < len(text) < 200:
+                    pairs.append((text, el))
+            except Exception:
+                pass
+        if len(pairs) >= 3:
+            return pairs
 
-        for (const fn of strategies) {
-            const els = fn();
-            if (els.length >= 3) {
-                return Array.from(els)
-                    .slice(0, 25)
-                    .map(el => el.innerText.trim())
-                    .filter(t => t && t.length > 1 && t.length < 200);
-            }
+    # Strategy 4: JavaScript broad extraction
+    texts: list[str] = await page.evaluate("""() => {
+        // Try links pointing to explore detail pages
+        const exploreLinks = Array.from(document.querySelectorAll('a[href]'))
+            .filter(a => a.href.includes('/trending/explore') || a.href.includes('/trends/explore'));
+        if (exploreLinks.length >= 3) {
+            return exploreLinks.slice(0, 25)
+                .map(a => a.innerText.trim())
+                .filter(t => t && t.length > 2 && t.length < 200);
         }
 
-        // Last resort: get text from feed-item elements
-        const items = document.querySelectorAll('feed-item');
-        if (items.length >= 3) {
-            return Array.from(items).slice(0, 25).map(item => {
-                const link = item.querySelector('a');
-                if (link) {
-                    const t = link.innerText.trim();
-                    if (t && t.length > 1 && t.length < 200) return t;
+        // Try feed-item components (Angular custom element)
+        const feedItems = document.querySelectorAll('feed-item');
+        if (feedItems.length >= 3) {
+            return Array.from(feedItems).slice(0, 25).map(item => {
+                for (const sel of ['[class*="title"] a', '[class*="title"]', 'a']) {
+                    const el = item.querySelector(sel);
+                    if (el) {
+                        const t = el.innerText.trim().split('\\n')[0].trim();
+                        if (t && t.length > 2 && t.length < 200) return t;
+                    }
                 }
-                return (item.innerText || '').split('\\n')[0].trim();
-            }).filter(t => t && t.length > 1 && t.length < 200);
+                return item.innerText.trim().split('\\n')[0].trim();
+            }).filter(t => t && t.length > 2 && t.length < 200);
+        }
+
+        // Last resort: look for any list-like structure with multiple items
+        for (const containerSel of ['[class*="trending-list"]', '[class*="feed-list"]', 'main ul', 'main ol']) {
+            const container = document.querySelector(containerSel);
+            if (!container) continue;
+            const items = container.querySelectorAll('li, [class*="item"]');
+            if (items.length >= 3) {
+                return Array.from(items).slice(0, 25)
+                    .map(i => i.innerText.trim().split('\\n')[0].trim())
+                    .filter(t => t && t.length > 2 && t.length < 200);
+            }
         }
         return [];
     }""")
+
+    return [(t, None) for t in texts[:25]]
 
 
 # ── Per-keyword scraping ──────────────────────────────────────────────────────
 
 async def _scrape_one_keyword(
-    page: Page, keyword: str, list_url: str, debug: bool
+    page: Page,
+    keyword: str,
+    element: object,
+    list_url: str,
+    idx: int,
+    debug: bool,
 ) -> dict:
     result: dict = {"keyword": keyword, "keyword_zh": keyword, "news": []}
-
     original_url = page.url
 
-    # Click the keyword
+    # Click: prefer the stored element, fall back to get_by_text
     clicked = False
-    for locator in [
-        page.get_by_text(keyword, exact=True).first,
-        page.locator(f"text={keyword}").first,
-    ]:
+
+    if element is not None:
         try:
-            if await locator.count() > 0:
-                await locator.click(timeout=5000)
-                clicked = True
-                break
+            await element.scroll_into_view_if_needed()
+            await element.click(timeout=6000)
+            clicked = True
         except Exception:
             pass
+
+    if not clicked:
+        for locator in [
+            page.locator(f"a[href*='/trending/explore']").nth(idx),
+            page.get_by_text(keyword, exact=True).first,
+            page.locator(f"text={keyword}").first,
+        ]:
+            try:
+                if await locator.count() > 0:
+                    await locator.click(timeout=6000)
+                    clicked = True
+                    break
+            except Exception:
+                pass
 
     if not clicked:
         print(f"    ⚠ 無法點擊: {keyword[:30]}")
         return result
 
-    await page.wait_for_timeout(2500)
+    # ── Wait for sidebar or page change ─────────────────────��────────────────
+    # First check if URL changed (navigated to detail page)
+    try:
+        await page.wait_for_url(lambda url: url != original_url, timeout=4000)
+    except Exception:
+        pass  # No navigation → sidebar mode
+
+    await page.wait_for_timeout(3000)  # Wait for sidebar/panel to render
+
+    # Try to wait for sidebar to appear
+    for sel in _PANEL_SELECTORS + ["[class*='article']", "[class*='news']"]:
+        try:
+            await page.wait_for_selector(sel, timeout=3000)
+            break
+        except Exception:
+            pass
 
     if debug:
         safe = "".join(c if c.isalnum() else "_" for c in keyword[:20])
         await page.screenshot(path=f"debug_{safe}.png")
 
-    # Navigated to a detail page?
     navigated = page.url != original_url
 
-    # Try sidebar news first
+    # ── Extract news ───────────────────────────────────────────────────────��──
     news = await _get_external_news_from_page(page)
 
     if not news:
-        # Try search button / Google News fallback
         news = await _try_search_fallback(page, keyword, original_url)
 
     result["news"] = [
         {"title": n["title"], "title_zh": n["title"], "url": n["url"]} for n in news[:3]
     ]
 
-    # Return to the list page
+    # ── Return to list page ───────────────────────────────────────────────────
     if page.url != list_url:
         try:
             await page.goto(list_url, wait_until="domcontentloaded", timeout=25000)
-            await page.wait_for_timeout(2000)
+            await page.wait_for_timeout(3000)
         except Exception:
             pass
     elif navigated:
-        await page.go_back(wait_until="domcontentloaded", timeout=15000)
-        await page.wait_for_timeout(1000)
+        try:
+            await page.go_back(wait_until="domcontentloaded", timeout=15000)
+            await page.wait_for_timeout(2000)
+        except Exception:
+            pass
     else:
-        # Close sidebar with Escape
         await page.keyboard.press("Escape")
-        await page.wait_for_timeout(500)
+        await page.wait_for_timeout(1000)
 
     return result
 
@@ -351,33 +454,43 @@ async def scrape_country(
     url = COUNTRY_URLS[country_code]
     print(f"\n[{country_code}] 開啟 {url}")
 
+    # Load page and wait for Angular rendering
     await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-    await page.wait_for_timeout(3000)
+    await _wait_for_content(page)
     await _dismiss_consent(page)
+    await page.wait_for_timeout(2000)  # Extra wait after consent dialog
 
     if debug:
         await page.screenshot(path=f"debug_{country_code}_list.png")
+        await _save_debug_html(page, country_code)
 
-    keywords = await _get_keywords(page)
-    if not keywords:
-        print(f"[{country_code}] ⚠ 未找到關鍵字，請開啟 BrowserMode=headed 手動確認")
-        if debug:
-            content = await page.content()
-            Path(f"debug_{country_code}_page.html").write_text(content, encoding="utf-8")
+    kw_pairs = await _get_keyword_elements(page)
+
+    if not kw_pairs:
+        print(f"[{country_code}] ⚠ 未找到關鍵字")
+        if not debug:
+            # Auto-save debug info on failure even without --debug flag
+            await _save_debug_html(page, country_code)
         return []
 
+    keywords = [kw for kw, _ in kw_pairs]
     print(f"[{country_code}] 找到 {len(keywords)} 個關鍵字，開始擷取新聞...")
 
+    list_url = page.url
     results: list[dict] = []
-    list_url = page.url  # May have changed after dismissing consent
 
-    for idx, keyword in enumerate(keywords[:25], 1):
-        print(f"  [{idx:02d}/{min(len(keywords), 25)}] {keyword[:40]}")
-        item = await _scrape_one_keyword(page, keyword, list_url, debug)
+    for idx, (keyword, element) in enumerate(kw_pairs[:25], 1):
+        print(f"  [{idx:02d}/{min(len(kw_pairs), 25)}] {keyword[:40]}")
+        item = await _scrape_one_keyword(page, keyword, element, list_url, idx - 1, debug)
         results.append(item)
-        news_count = len(item.get("news", []))
-        print(f"       → {news_count} 則新聞")
-        await asyncio.sleep(0.3)  # Polite delay
+        print(f"       → {len(item.get('news', []))} 則新聞")
+        await asyncio.sleep(0.3)
+
+        # Re-anchor list_url in case a redirect happened
+        if page.url == list_url and "trending" in page.url:
+            pass
+        else:
+            list_url = url  # Reset to original if drifted
 
     return results
 
