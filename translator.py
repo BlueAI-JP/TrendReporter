@@ -65,11 +65,13 @@ def _parse_response(text: str, expected: int) -> list[str]:
 # ── API callers ───────────────────────────────────────────────────────────────
 
 def _call_gemini(texts: list[str], api_key: str, model: str) -> list[str]:
-    import google.generativeai as genai  # type: ignore
+    from google import genai  # type: ignore  (google-genai package)
 
-    genai.configure(api_key=api_key)
-    m = genai.GenerativeModel(model or "gemini-2.0-flash")
-    response = m.generate_content(_build_prompt(texts))
+    client = genai.Client(api_key=api_key)
+    response = client.models.generate_content(
+        model=model or "gemini-2.0-flash",
+        contents=_build_prompt(texts),
+    )
     return _parse_response(response.text, len(texts))
 
 

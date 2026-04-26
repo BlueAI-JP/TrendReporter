@@ -293,23 +293,28 @@ async def _scrape_one_keyword(
     original_url = page.url
 
     # ── Click the feed-item at this index ─────────────────────────────────────
-    # Avoid clicking the explore <a> button by clicking the left portion
+    # Scroll to element first, then click the left 35% (keyword text area)
+    # to avoid hitting the "Explore" button on the right.
     clicked = False
+    click_err = ""
     try:
         feed_items = await page.locator("feed-item").all()
         if idx < len(feed_items):
             el = feed_items[idx]
+            await el.scroll_into_view_if_needed()
+            await page.wait_for_timeout(400)  # Let scroll animation settle
             bbox = await el.bounding_box()
             if bbox:
-                # Click left-centre area (keyword text zone, not explore btn on right)
                 x = min(bbox["width"] * 0.35, 250)
                 y = bbox["height"] * 0.5
                 await el.click(position={"x": x, "y": y}, timeout=6000)
             else:
                 await el.click(timeout=6000)
             clicked = True
-    except Exception:
-        pass
+        else:
+            click_err = f"feed-item 只有 {len(feed_items)} 個，索引 {idx} 超出範圍"
+    except Exception as e:
+        click_err = str(e)[:80]
 
     # Fallback: click by keyword text
     if not clicked:
@@ -319,6 +324,7 @@ async def _scrape_one_keyword(
         ]:
             try:
                 if await loc.count() > 0:
+                    await loc.scroll_into_view_if_needed()
                     await loc.click(timeout=6000)
                     clicked = True
                     break
@@ -326,7 +332,7 @@ async def _scrape_one_keyword(
                 pass
 
     if not clicked:
-        print(f"    ⚠ 無法點擊，改用 Google News 搜尋")
+        print(f"    → 改用 Google News 搜尋" + (f" ({click_err})" if click_err else ""))
         news = await _news_via_google_search(page, keyword)
         result["news"] = [{"title": n["title"], "title_zh": n["title"], "url": n["url"]} for n in news[:3]]
         if page.url != list_url:
