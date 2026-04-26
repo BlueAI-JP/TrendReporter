@@ -89,8 +89,11 @@ def _call_anthropic(texts: list[str], api_key: str, model: str) -> list[str]:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+TRANSLATE_COUNTRIES = {"JP", "KR"}
+
+
 def translate_country_data(
-    items: list[dict], settings: Settings
+    items: list[dict], settings: Settings, country_code: str = ""
 ) -> tuple[list[dict], Optional[str]]:
     """Batch-translate all text for one country in a single AI API call.
 
@@ -98,6 +101,10 @@ def translate_country_data(
     error_message is None on success; a non-empty string if the API failed
     (items will still be filled with original text as fallback).
     """
+
+    if country_code and country_code not in TRANSLATE_COUNTRIES:
+        _fill_missing(items)
+        return items, None
 
     texts: list[str] = []
     positions: list[tuple] = []  # (item_idx, 'keyword' | 'news', news_idx)

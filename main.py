@@ -80,7 +80,7 @@ def run_from_json(settings: Settings, countries: list[str]) -> None:
             print(f"[{code}] JSON 中無資料，跳過")
             continue
         print(f"\n[{code}] 翻譯 {len(items)} 條資料...")
-        items, trans_error = translate_country_data(items, settings)
+        items, trans_error = translate_country_data(items, settings, code)
         send_email(settings, code, items)
         if trans_error:
             send_notification(settings, code, trans_error)
@@ -117,7 +117,7 @@ async def run_full(
                 continue
 
             print(f"[{code}] 開始批次翻譯...")
-            items, trans_error = translate_country_data(items, settings)
+            items, trans_error = translate_country_data(items, settings, code)
             all_data[code] = items
 
             # Update JSON with translations
