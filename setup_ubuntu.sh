@@ -9,6 +9,9 @@ echo
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+VENV_DIR="$SCRIPT_DIR/.venv"
+PYTHON="$VENV_DIR/bin/python"
+
 # ── 1. System packages ────────────────────────────────────────
 echo "[安裝] 更新系統套件..."
 sudo apt-get update -qq
@@ -22,24 +25,52 @@ if ! command -v uv &>/dev/null; then
     echo "[安裝] 安裝 uv 套件管理器..."
     curl -LsSf https://astral.sh/uv/install.sh | sh
     export PATH="$HOME/.local/bin:$PATH"
-    echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+    # Persist to .bashrc only if not already there
+    grep -qxF 'export PATH="$HOME/.local/bin:$PATH"' ~/.bashrc \
+        || echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 fi
+export PATH="$HOME/.local/bin:$PATH"
 echo "[OK] uv $(uv --version)"
 
-# ── 3. Install Python dependencies ───────────────────────────
+# ── 3. Create virtual environment ────────────────────────────
 echo
-echo "[安裝] 安裝 Python 依賴套件..."
-uv pip install -r requirements.txt --system 2>/dev/null || \
-    python3 -m pip install -r requirements.txt
+echo "[安裝] 建立虛擬環境 $VENV_DIR ..."
+# uv venv is faster; fall back to python3 -m venv
+if command -v uv &>/dev/null; then
+    uv venv "$VENV_DIR" --python python3
+else
+    python3 -m venv "$VENV_DIR"
+fi
+echo "[OK] 虛擬環境建立完成"
 
-# ── 4. Install Playwright + system dependencies ───────────────
+# ── 4. Install Python dependencies into venv ─────────────────
+echo
+echo "[安裝] 安裝 Python 依賴套件到虛擬環境..."
+if command -v uv &>/dev/null; then
+    uv pip install -r requirements.txt --python "$PYTHON"
+else
+    "$PYTHON" -m pip install -r requirements.txt
+fi
+echo "[OK] 依賴套件安裝完成"
+
+# ── 5. Install Playwright + system dependencies ───────────────
 echo
 echo "[安裝] 安裝 Playwright Chromium 及系統依賴..."
-python3 -m playwright install-deps chromium
-python3 -m playwright install chromium
+"$PYTHON" -m playwright install-deps chromium
+"$PYTHON" -m playwright install chromium
 echo "[OK] Playwright Chromium 安裝完成"
 
-# ── 5. Reminder ──────────────────────────────────────────────
+# ── 6. Create run wrapper script ─────────────────────────────
+cat > "$SCRIPT_DIR/run.sh" <<EOF
+#!/usr/bin/env bash
+# 使用虛擬環境執行 TrendReporter
+cd "$SCRIPT_DIR"
+exec "$PYTHON" main.py "\$@"
+EOF
+chmod +x "$SCRIPT_DIR/run.sh"
+echo "[OK] 建立執行腳本: run.sh"
+
+# ── 7. Reminder ──────────────────────────────────────────────
 echo
 echo "[確認] 請確認 MailSetting.txt 已填入："
 echo "  AIProvider    = gemini 或 anthropic"
@@ -49,20 +80,26 @@ echo "  Receiver      = 收件人（多人用分號隔開）"
 echo "  AppPassword   = Gmail 應用程式密碼（16碼）"
 echo
 
-# ── 6. Optional test email ────────────────────────────────────
+if [ ! -f "$SCRIPT_DIR/MailSetting.txt" ]; then
+    cp "$SCRIPT_DIR/MailSetting.example.txt" "$SCRIPT_DIR/MailSetting.txt"
+    echo "[建立] MailSetting.txt 已從範本建立，請編輯填入設定"
+    echo "  nano $SCRIPT_DIR/MailSetting.txt"
+    echo
+fi
+
+# ── 8. Optional test email ────────────────────────────────────
 read -rp "是否要寄送測試信？(y/n): " answer
 if [[ "$answer" =~ ^[Yy]$ ]]; then
     echo
     echo "[測試] 寄送測試信..."
-    python3 main.py --test
+    "$PYTHON" main.py --test
 fi
 
-# ── 7. Offer to set up cron job ───────────────────────────────
+# ── 9. Offer to set up cron job ───────────────────────────────
 echo
 read -rp "是否要設定每天早上 8:00 自動執行排程？(y/n): " setup_cron
 if [[ "$setup_cron" =~ ^[Yy]$ ]]; then
-    CRON_LINE="0 8 * * * cd $SCRIPT_DIR && python3 main.py >> $SCRIPT_DIR/trend_cron.log 2>&1"
-    # Check if already exists
+    CRON_LINE="0 8 * * * $SCRIPT_DIR/run.sh >> $SCRIPT_DIR/trend_cron.log 2>&1"
     if crontab -l 2>/dev/null | grep -qF "trend_reporter"; then
         echo "[跳過] cron 排程已存在"
     else
@@ -74,11 +111,15 @@ fi
 echo
 echo "============================================================"
 echo " 安裝完成！執行方式："
-echo "   python3 main.py             完整執行"
-echo "   python3 main.py --debug     顯示瀏覽器視窗"
-echo "   python3 main.py --test      寄送測試信"
+echo "   ./run.sh                    完整執行（四國擷取+翻譯+寄信）"
+echo "   ./run.sh --debug            顯示瀏覽器視窗（除錯用）"
+echo "   ./run.sh --test             寄送測試信"
+echo "   ./run.sh --country JP       只處理日本"
+echo
+echo " 或直接用虛擬環境 Python："
+echo "   $PYTHON main.py"
 echo
 echo " 手動設定 cron 排程："
 echo "   crontab -e"
-echo "   加入: 0 8 * * * cd $SCRIPT_DIR && python3 main.py >> trend_cron.log 2>&1"
+echo "   加入: 0 8 * * * $SCRIPT_DIR/run.sh >> $SCRIPT_DIR/trend_cron.log 2>&1"
 echo "============================================================"
