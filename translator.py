@@ -89,8 +89,15 @@ def _call_anthropic(texts: list[str], api_key: str, model: str) -> list[str]:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def translate_country_data(items: list[dict], settings: Settings) -> list[dict]:
-    """Batch-translate all text for one country in a single AI API call."""
+def translate_country_data(
+    items: list[dict], settings: Settings
+) -> tuple[list[dict], Optional[str]]:
+    """Batch-translate all text for one country in a single AI API call.
+
+    Returns (items, error_message).
+    error_message is None on success; a non-empty string if the API failed
+    (items will still be filled with original text as fallback).
+    """
 
     texts: list[str] = []
     positions: list[tuple] = []  # (item_idx, 'keyword' | 'news', news_idx)
@@ -112,10 +119,12 @@ def translate_country_data(items: list[dict], settings: Settings) -> list[dict]:
                 news["title_zh"] = title
 
     if not texts:
-        return items
+        _fill_missing(items)
+        return items, None
 
     print(f"  翻譯 {len(texts)} 條文字 (單次 API 呼叫)...")
 
+    error_msg: Optional[str] = None
     try:
         if settings.ai_provider == "gemini":
             if not settings.gemini_api_key or settings.gemini_api_key.startswith("YOUR_"):
@@ -137,14 +146,18 @@ def translate_country_data(items: list[dict], settings: Settings) -> list[dict]:
                 items[i]["news"][j]["title_zh"] = translated
 
     except Exception as e:
-        print(f"  ⚠ 翻譯 API 失敗: {e}，使用原文替代")
+        error_msg = str(e)
+        print(f"  ⚠ 翻譯 API 失敗: {error_msg}，改用原文")
 
-    # Fill any missing translations with original text
+    _fill_missing(items)
+    return items, error_msg
+
+
+def _fill_missing(items: list[dict]) -> None:
+    """Fill any untranslated fields with the original text."""
     for item in items:
         if "keyword_zh" not in item:
             item["keyword_zh"] = item.get("keyword", "")
         for news in item.get("news", []):
             if "title_zh" not in news:
                 news["title_zh"] = news.get("title", "")
-
-    return items

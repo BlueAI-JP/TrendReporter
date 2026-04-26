@@ -83,6 +83,47 @@ def build_html(country_code: str, items: list[dict]) -> str:
 </html>"""
 
 
+def send_notification(settings: Settings, country_code: str, error_msg: str) -> None:
+    country_name = COUNTRY_NAMES.get(country_code, country_code)
+    subject = f"[Notification] 翻譯API失敗-{country_name}"
+    today = datetime.now().strftime("%Y/%m/%d %H:%M")
+    html_body = f"""<!DOCTYPE html>
+<html lang="zh-Hant">
+<head><meta charset="UTF-8"></head>
+<body style="font-family:'Noto Sans TC',Arial,sans-serif;margin:0;padding:20px;background:#f5f5f5">
+  <div style="max-width:640px;margin:0 auto;background:#fff;border-radius:8px;
+              box-shadow:0 2px 8px rgba(0,0,0,.1);overflow:hidden">
+    <div style="background:#d93025;padding:20px 28px">
+      <h1 style="margin:0;color:#fff;font-size:1.2em">⚠ 翻譯 API 失敗通知</h1>
+      <p style="margin:6px 0 0;color:#fdd;font-size:0.9em">{today} ・ {country_name}</p>
+    </div>
+    <div style="padding:20px 28px">
+      <p>國家 <strong>{country_name}</strong> 的翻譯 API 呼叫失敗，郵件已使用原文寄出。</p>
+      <p style="font-weight:600">錯誤訊息：</p>
+      <pre style="background:#f8f8f8;border:1px solid #e0e0e0;border-radius:4px;
+                  padding:12px;font-size:0.9em;overflow-x:auto;white-space:pre-wrap">{error_msg}</pre>
+    </div>
+    <div style="padding:14px 28px;background:#f8f9fa;border-top:1px solid #e0e0e0;
+                font-size:0.8em;color:#888">
+      此通知由 阿Vi每日趨勢報 自動發送
+    </div>
+  </div>
+</body>
+</html>"""
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = settings.sender
+    msg["To"] = settings.sender
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
+
+    print(f"  → 寄送翻譯失敗通知至 {settings.sender} ...", end=" ", flush=True)
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.login(settings.sender, settings.app_password)
+        server.sendmail(settings.sender, [settings.sender], msg.as_bytes())
+    print("✓ 完成")
+
+
 def send_email(settings: Settings, country_code: str, items: list[dict]) -> None:
     country_name = COUNTRY_NAMES.get(country_code, country_code)
     subject = f"阿Vi的每日趨勢報-{country_name}"

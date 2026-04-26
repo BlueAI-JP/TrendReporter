@@ -21,7 +21,7 @@ from pathlib import Path
 from config import load_settings, Settings
 from scraper import scrape_country, create_browser, close_browser, COUNTRY_ORDER
 from translator import translate_country_data
-from mailer import send_email, build_html
+from mailer import send_email, send_notification, build_html
 
 BASE_DIR = Path(__file__).parent
 DATA_FILE = BASE_DIR / "trend_data.json"
@@ -80,8 +80,10 @@ def run_from_json(settings: Settings, countries: list[str]) -> None:
             print(f"[{code}] JSON 中無資料，跳過")
             continue
         print(f"\n[{code}] 翻譯 {len(items)} 條資料...")
-        items = translate_country_data(items, settings)
+        items, trans_error = translate_country_data(items, settings)
         send_email(settings, code, items)
+        if trans_error:
+            send_notification(settings, code, trans_error)
 
 
 # ── Main scrape + translate + email ──────────────────────────────────────────
@@ -115,7 +117,7 @@ async def run_full(
                 continue
 
             print(f"[{code}] 開始批次翻譯...")
-            items = translate_country_data(items, settings)
+            items, trans_error = translate_country_data(items, settings)
             all_data[code] = items
 
             # Update JSON with translations
@@ -124,6 +126,8 @@ async def run_full(
 
             if not no_email:
                 send_email(settings, code, items)
+                if trans_error:
+                    send_notification(settings, code, trans_error)
 
     finally:
         await close_browser(pw, browser)
