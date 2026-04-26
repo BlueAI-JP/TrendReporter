@@ -77,20 +77,9 @@ async def _wait_for_content(page: Page) -> None:
 
 
 async def _scroll_to_load_keywords(page: Page, target: int = 25) -> None:
-    """Wheel-scroll down until `target` unique keywords appear in DOM."""
+    """Wheel-scroll down until `target` feed-items appear in DOM."""
     for _ in range(20):
-        count = await page.evaluate("""() => {
-            const qs = new Set();
-            for (const a of document.querySelectorAll(
-                    'a[href*="/trends/explore"], a[href*="/trending/explore"]')) {
-                try {
-                    const q = new URL(a.href).searchParams.get('q');
-                    if (q && q.length >= 2) qs.add(q);
-                } catch (e) {}
-            }
-            return qs.size;
-        }""")
-        if count >= target:
+        if await page.locator("feed-item").count() >= target:
             break
         await page.mouse.wheel(0, 700)
         await page.wait_for_timeout(1000)
@@ -452,6 +441,12 @@ async def scrape_country(page: Page, country_code: str, debug: bool = False) -> 
     if debug:
         await page.screenshot(path=f"debug_{country_code}_list.png")
         await _save_debug_html(page, country_code)
+
+    # Wait for Angular to render at least one feed-item before scrolling
+    try:
+        await page.wait_for_selector("feed-item", timeout=20000)
+    except Exception:
+        pass
 
     print(f"[{country_code}] 捲動載入所有關鍵字...")
     await _scroll_to_load_keywords(page, target=25)
