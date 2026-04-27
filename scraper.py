@@ -76,19 +76,27 @@ async def _wait_for_content(page: Page) -> None:
     await page.wait_for_timeout(6000)
 
 
+_ROW_SELECTOR = 'tr[jsname="oKdM2c"]'   # Wiz table row (new structure)
+_KW_SELECTOR   = "div.mZ3RIc"            # keyword text cell (new structure)
+
+
 async def _scroll_to_load_keywords(page: Page, target: int = 25) -> None:
-    """Wheel-scroll down until `target` feed-items appear in DOM."""
+    """Wheel-scroll down until `target` trend rows appear in DOM."""
     for _ in range(20):
-        if await page.locator("feed-item").count() >= target:
+        wiz = await page.locator(_ROW_SELECTOR).count()
+        ang = await page.locator("feed-item").count()
+        if max(wiz, ang) >= target:
             break
         await page.mouse.wheel(0, 700)
         await page.wait_for_timeout(1000)
 
 
-async def _ensure_feed_item(page: Page, idx: int) -> None:
-    """Scroll until feed-item at `idx` is present in DOM."""
+async def _ensure_row(page: Page, idx: int) -> None:
+    """Scroll until row at `idx` is present in DOM (either structure)."""
     for _ in range(10):
-        if await page.locator("feed-item").count() > idx:
+        wiz = await page.locator(_ROW_SELECTOR).count()
+        ang = await page.locator("feed-item").count()
+        if max(wiz, ang) > idx:
             break
         await page.mouse.wheel(0, 600)
         await page.wait_for_timeout(800)
@@ -123,9 +131,9 @@ async def _save_debug_html(page: Page, label: str) -> None:
 
     summary = await page.evaluate("""() => {
         const candidates = [
+            'tr[jsname="oKdM2c"]', 'div.mZ3RIc',
             'feed-item', 'feed-list',
             'a[href*="/trends/explore"]', 'a[href*="/trending/explore"]',
-            '[class*="trending"]', '[class*="feed"]',
         ];
         const counts = {};
         for (const s of candidates) {
@@ -143,16 +151,30 @@ async def _save_debug_html(page: Page, label: str) -> None:
 async def _extract_keywords(page: Page) -> list[str]:
     """Extract up to 25 trending keywords.
 
-    Strategy 1 (primary): read ?q= parameter from /trends/explore links.
-    Strategy 2: remove <a> tags from feed-item clones, take first text line.
-    Strategy 3: broad JS search.
+    Strategy 1 (primary): Wiz table — read text from div.mZ3RIc cells.
+    Strategy 2 (Angular fallback): first explore link per feed-item.
+    Strategy 3 (Angular fallback): feed-item clone text.
     """
 
-    # ── Strategy 1: first explore link per feed-item ─────────────────────────
-    # Each feed-item has multiple /trends/explore links:
-    #   [0] = main keyword,  [1+] = related "趨勢詳細資料" topics (wrong ones)
-    # We must take only the FIRST link per feed-item.
+    # ── Strategy 1: Wiz table structure (new) ────────────────────────────────
     keywords: list[str] = await page.evaluate("""() => {
+        const cells = document.querySelectorAll('div.mZ3RIc');
+        if (cells.length < 3) return [];
+        const results = [];
+        for (const cell of cells) {
+            const t = (cell.innerText || cell.textContent || '').trim();
+            if (t.length >= 2 && t.length <= 200) results.push(t);
+            if (results.length >= 25) break;
+        }
+        return results;
+    }""")
+
+    if len(keywords) >= 3:
+        print(f"  [keyword] Strategy 1 (Wiz mZ3RIc): {len(keywords)} 個")
+        return keywords
+
+    # ── Strategy 2: first explore link per feed-item (Angular) ───────────────
+    keywords = await page.evaluate("""() => {
         const results = [];
         const seen = new Set();
         const feedItems = document.querySelectorAll('feed-item');
@@ -177,49 +199,29 @@ async def _extract_keywords(page: Page) -> list[str]:
     }""")
 
     if len(keywords) >= 3:
-        print(f"  [keyword] Strategy 1 (q= param): {len(keywords)} 個")
+        print(f"  [keyword] Strategy 2 (Angular feed-item): {len(keywords)} 個")
         return keywords
 
-    # ── Strategy 2: feed-item text after removing <a> tags ───────────────────
+    # ── Strategy 3: feed-item clone text (Angular fallback) ──────────────────
     items = await page.locator("feed-item").all()
-    if len(items) >= 3:
-        results = []
-        for el in items[:25]:
-            try:
-                text = await el.evaluate("""el => {
-                    const clone = el.cloneNode(true);
-                    clone.querySelectorAll('a, mat-icon').forEach(n => n.remove());
-                    const lines = clone.innerText.trim().split('\\n')
-                        .map(l => l.trim())
-                        .filter(l => l.length > 2 && !/^\\d+$/.test(l));
-                    return lines[0] || '';
-                }""")
-                if text and 2 < len(text) < 200:
-                    results.append(text)
-            except Exception:
-                pass
-        if len(results) >= 3:
-            print(f"  [keyword] Strategy 2 (feed-item clone): {len(results)} 個")
-            return results
-
-    # ── Strategy 3: broad JS ─────────────────────────────────────────────────
-    results = await page.evaluate("""() => {
-        const items = document.querySelectorAll('feed-item');
-        if (items.length >= 3) {
-            return Array.from(items).slice(0, 25).map(item => {
-                const clone = item.cloneNode(true);
+    results = []
+    for el in items[:25]:
+        try:
+            text = await el.evaluate("""el => {
+                const clone = el.cloneNode(true);
                 clone.querySelectorAll('a, mat-icon').forEach(n => n.remove());
                 const lines = clone.innerText.trim().split('\\n')
                     .map(l => l.trim())
                     .filter(l => l.length > 2 && !/^\\d+$/.test(l));
                 return lines[0] || '';
-            }).filter(t => t.length > 2 && t.length < 200);
-        }
-        return [];
-    }""")
+            }""")
+            if text and 2 < len(text) < 200:
+                results.append(text)
+        except Exception:
+            pass
 
     if results:
-        print(f"  [keyword] Strategy 3 (JS broad): {len(results)} 個")
+        print(f"  [keyword] Strategy 3 (Angular clone): {len(results)} 個")
     return results[:25]
 
 
@@ -317,29 +319,32 @@ async def _scrape_one_keyword(
     result: dict = {"keyword": keyword, "keyword_zh": keyword, "news": []}
     original_url = page.url
 
-    # ── Click the feed-item at this index ─────────────────────────────────────
-    # Scroll to element first, then click the left 35% (keyword text area)
-    # to avoid hitting the "Explore" button on the right.
+    # ── Click the row at this index ───────────────────────────────────────────
+    # Try Wiz table rows first, then Angular feed-items as fallback.
+    # Click the left 35% to avoid hitting action buttons on the right.
     clicked = False
     click_err = ""
-    try:
-        feed_items = await page.locator("feed-item").all()
-        if idx < len(feed_items):
-            el = feed_items[idx]
-            await el.scroll_into_view_if_needed()
-            await page.wait_for_timeout(400)  # Let scroll animation settle
-            bbox = await el.bounding_box()
-            if bbox:
-                x = min(bbox["width"] * 0.35, 250)
-                y = bbox["height"] * 0.5
-                await el.click(position={"x": x, "y": y}, timeout=6000)
+
+    for locator_str in [_ROW_SELECTOR, "feed-item"]:
+        try:
+            rows = await page.locator(locator_str).all()
+            if idx < len(rows):
+                el = rows[idx]
+                await el.scroll_into_view_if_needed()
+                await page.wait_for_timeout(400)
+                bbox = await el.bounding_box()
+                if bbox:
+                    x = min(bbox["width"] * 0.35, 250)
+                    y = bbox["height"] * 0.5
+                    await el.click(position={"x": x, "y": y}, timeout=6000)
+                else:
+                    await el.click(timeout=6000)
+                clicked = True
+                break
             else:
-                await el.click(timeout=6000)
-            clicked = True
-        else:
-            click_err = f"feed-item 只有 {len(feed_items)} 個，索引 {idx} 超出範圍"
-    except Exception as e:
-        click_err = str(e)[:80]
+                click_err = f"{locator_str} 只有 {len(rows)} 個，索引 {idx} 超出範圍"
+        except Exception as e:
+            click_err = str(e)[:80]
 
     # Fallback: click by keyword text
     if not clicked:
@@ -442,11 +447,13 @@ async def scrape_country(page: Page, country_code: str, debug: bool = False) -> 
         await page.screenshot(path=f"debug_{country_code}_list.png")
         await _save_debug_html(page, country_code)
 
-    # Wait for Angular to render at least one feed-item before scrolling
-    try:
-        await page.wait_for_selector("feed-item", timeout=20000)
-    except Exception:
-        pass
+    # Wait for at least one trend row to appear (either Wiz or Angular)
+    for sel in [_ROW_SELECTOR, _KW_SELECTOR, "feed-item"]:
+        try:
+            await page.wait_for_selector(sel, timeout=15000)
+            break
+        except Exception:
+            pass
 
     print(f"[{country_code}] 捲動載入所有關鍵字...")
     await _scroll_to_load_keywords(page, target=25)
@@ -465,7 +472,7 @@ async def scrape_country(page: Page, country_code: str, debug: bool = False) -> 
 
     for idx, keyword in enumerate(keywords[:25]):
         print(f"  [{idx+1:02d}/{min(len(keywords), 25)}] {keyword[:40]}")
-        await _ensure_feed_item(page, idx)
+        await _ensure_row(page, idx)
         item = await _scrape_one_keyword(page, keyword, idx, list_url, debug)
         results.append(item)
         print(f"       → {len(item.get('news', []))} 則新聞")
