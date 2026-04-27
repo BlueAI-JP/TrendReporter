@@ -15,6 +15,7 @@ class Settings:
     anthropic_api_key: str = ""
     ai_model: str = ""
     browser_mode: str = "headless"
+    notify_on_translation_error: bool = True
 
 
 def load_settings(path: Optional[Path] = None) -> Settings:
@@ -45,4 +46,5 @@ def load_settings(path: Optional[Path] = None) -> Settings:
         anthropic_api_key=raw.get("AnthropicAPIKey", ""),
         ai_model=raw.get("AIModel", ""),
         browser_mode=raw.get("BrowserMode", "headless").lower(),
+        notify_on_translation_error=raw.get("NotifyOnTranslationError", "true").lower() != "false",
     )

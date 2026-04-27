@@ -82,7 +82,7 @@ def run_from_json(settings: Settings, countries: list[str]) -> None:
         print(f"\n[{code}] 翻譯 {len(items)} 條資料...")
         items, trans_error = translate_country_data(items, settings, code)
         send_email(settings, code, items)
-        if trans_error:
+        if trans_error and settings.notify_on_translation_error:
             send_notification(settings, code, trans_error)
 
 
@@ -126,7 +126,7 @@ async def run_full(
 
             if not no_email:
                 send_email(settings, code, items)
-                if trans_error:
+                if trans_error and settings.notify_on_translation_error:
                     send_notification(settings, code, trans_error)
 
     finally:
